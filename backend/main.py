@@ -1,12 +1,16 @@
-from flask import Flask, request,jsonify
+from flask import Flask, request,jsonify,url_for
 from pony.orm import *
 from dotenv import load_dotenv, dotenv_values
+from werkzeug.utils import secure_filename
 
+import os
 import pymysql
 import bcrypt
+import uuid
 
 load_dotenv()
 app = Flask(__name__)
+
 config = dotenv_values(".env")
 mysql = pymysql.connect(
         host= config['DB_HOST'],
@@ -14,6 +18,11 @@ mysql = pymysql.connect(
         password= config['DB_PASSWORD'],
         database= config['DB_NAME'],
 )
+UPLOAD_FOLDER = 'static/storage'
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route("/")
 def hello_world():
@@ -24,19 +33,44 @@ def hello_world():
 
 @app.route("/submit-blog", methods=['POST'])
 def submitBlog():
-    if request.method == 'POST':
+    if 'img_blog' not in request.files:
+        return jsonify({
+            "status": 400,
+            "error": True,
+            "message": "No image file provided"
+        }), 400
+    
+    file = request.files['img_blog']
+    
+    if file.filename == '':
+        return jsonify({
+            "status": 400,
+            "error": True,
+            "message": "No selected file"
+        }), 400
+
+    if file and allowed_file(file.filename):
+        original_filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{original_filename}"
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        
+        file.save(file_path)
+        
+        image_url = url_for('static', filename=f'storage/{unique_filename}', _external=True)
+        
         title = request.form['title']
-        img_blog = request.form['img_blog']
         description = request.form['content']
+        
         cur = mysql.cursor()
-        cur.execute("INSERT INTO blog (title,img_blog, content) VALUES (%s,%s, %s)", (title,img_blog, description))
+        cur.execute("INSERT INTO blog (title, img_blog, content) VALUES (%s, %s, %s)", (title, image_url, description))
         mysql.commit()
 
         if cur.rowcount > 0:
-            return jsonify( {
+            return jsonify({
                 "status": 201,
                 "error": False,
-                "message": "Blog submitted successfully"
+                "message": "Blog submitted successfully",
+                "image_url": image_url 
             }), 201
         else:
             return jsonify({
@@ -44,7 +78,14 @@ def submitBlog():
                 "error": True,
                 "message": "Blog submission failed"
             }), 400
-
+    else:
+        return jsonify({
+            "status": 400,
+            "error": True,
+            "message": "Invalid file format"
+        }), 400   
+    
+    
 @app.route("/get-blogs", methods=['GET'])
 def getBlogs():
     page = request.args.get('page', default=1, type=int)  
